@@ -17,6 +17,12 @@ public class Har {
         this.log = log;
     }
 
+    public Har(String json) throws IOException {
+        ObjectMapper om = new ObjectMapper();
+        Har har = om.readValue(json, Har.class);
+        this.log = har.log;
+    }
+
     public HarLog getLog() {
         return log;
     }

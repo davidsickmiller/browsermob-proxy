@@ -18,6 +18,7 @@ import org.java_bandwidthlimiter.BandwidthLimiter;
 import org.java_bandwidthlimiter.StreamManager;
 import org.openqa.selenium.Proxy;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
@@ -173,6 +174,14 @@ public class ProxyServer {
         }
 
         return client.getHar();
+    }
+
+    public void setSourceHar(String harJson) {
+        try {
+            Har har = new Har(harJson);
+            client.setSourceHar(har);
+        } catch (IOException e) {
+        }
     }
 
     public Har newHar(String initialPageRef) {

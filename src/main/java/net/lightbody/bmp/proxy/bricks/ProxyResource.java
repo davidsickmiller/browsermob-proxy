@@ -154,6 +154,20 @@ public class ProxyResource {
     }
 
     @Put
+    @At("/:port/sourcehar")
+    public Reply<?> sourcehar(@Named("port") int port, Request request) {
+        ProxyServer proxy = proxyManager.get(port);
+        if (proxy == null) {
+            return Reply.saying().notFound();
+        }
+
+        String har = request.param("har");
+        proxy.setSourceHar(har);
+
+        return Reply.saying().ok();
+    }
+    
+    @Put
     @At("/:port/whitelist")
     public Reply<?> whitelist(@Named("port") int port, Request request) {
         ProxyServer proxy = proxyManager.get(port);

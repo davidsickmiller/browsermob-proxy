@@ -58,6 +58,7 @@
                         <configuration>
                             <repositoryLayout>flat</repositoryLayout>
                             <repositoryName>lib</repositoryName>
+			    <extraJvmArguments>-Dorg.eclipse.jetty.server.Request.maxFormContentSize=-1</extraJvmArguments>
                             <programs>
                                 <program>
                                     <mainClass>net.lightbody.bmp.proxy.Main</mainClass>
@@ -210,6 +211,11 @@
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
             <artifactId>httpclient</artifactId>
+            <version>4.2.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpcore</artifactId>
             <version>4.2.3</version>
         </dependency>
         <dependency>

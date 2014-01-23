@@ -23,6 +23,7 @@ import org.apache.http.conn.scheme.SchemeRegistry;
 import org.apache.http.cookie.*;
 import org.apache.http.cookie.params.CookieSpecPNames;
 import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.auth.BasicScheme;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.impl.client.DefaultHttpRequestRetryHandler;
@@ -30,6 +31,7 @@ import org.apache.http.impl.conn.tsccm.ThreadSafeClientConnManager;
 import org.apache.http.impl.cookie.BasicClientCookie;
 import org.apache.http.impl.cookie.BrowserCompatSpec;
 import org.apache.http.message.BasicStatusLine;
+import org.apache.http.message.BasicHttpResponse;
 import org.apache.http.params.CoreConnectionPNames;
 import org.apache.http.params.HttpParams;
 import org.apache.http.protocol.BasicHttpContext;
@@ -54,6 +56,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class BrowserMobHttpClient {
     private static final Log LOG = new Log();
@@ -62,6 +65,7 @@ public class BrowserMobHttpClient {
     private static final int BUFFER = 4096;
 
     private Har har;
+    private Har sourceHar;
     private String harPageRef;
 
     private boolean captureHeaders;
@@ -487,6 +491,114 @@ public class BrowserMobHttpClient {
             }
         }
 
+        InputStream is = null;
+        String charSet = "UTF-8";
+        long bytes = 0;
+        boolean gzipping = false;
+        OutputStream os = req.getOutputStream();
+        if (os == null) {
+            os = new CappedByteArrayOutputStream(1024 * 1024); // MOB-216 don't buffer more than 1 MB
+        }
+
+        if (sourceHar != null) {
+            HarLog log = sourceHar.getLog();
+            for (HarEntry entry : log.getEntries()) {
+                HarRequest request = entry.getRequest();
+                if (url.equals(request.getUrl())) {
+		    LOG.info("Serving " + url + " from HAR");
+                    // Make sure we set the status line here too.
+                    // Use the version number from the request
+		    //LOG.info("http version of entry is " + entry.getResponse().getHttpVersion());
+                    // Browsermob-proxy fails to record it, but I think it only does 1.1
+                    ProtocolVersion version = new HttpVersion(1, 1);
+		    /*
+                    ProtocolVersion version = new HttpVersion(0, 9);
+                    if (entry.getResponse().getHttpVersion().equals("HTTP/1.0")) {
+                        version = new HttpVersion(1, 0);
+                    } else if (entry.getResponse().getHttpVersion().equals("HTTP/1.1")) {
+                        version = new HttpVersion(1, 1);
+                    }
+		    */
+
+                    StatusLine statusLine = new BasicStatusLine(version, entry.getResponse().getStatus(), entry.getResponse().getStatusText());
+                    HttpResponse response = new BasicHttpResponse(statusLine);
+
+		    // Omit Content-Length.  This allows us to avoid problems that
+                    // could be caused by content-encoding changes, charset changes
+                    // or handmade content changes to the HAR content.  Jetty will
+                    // serve the content using chunking.
+		    for (HarNameValuePair nvp : entry.getResponse().getHeaders()) {
+			if (!nvp.getName().equals("Content-Length")) {
+		            //LOG.info("Adding header: " + nvp.getName() + "=" + nvp.getValue());
+                            response.addHeader(nvp.getName(), nvp.getValue());
+			}
+		    }
+
+                    String errorMessage = null;
+                    String contentType = entry.getResponse().getContent().getMimeType();
+
+                    try {
+			// TODO: Handle binary content
+			// TODO: If the mimetype indicates a character set other than UTF-8, we should change back to that encoding
+                        HttpEntity entity = new StringEntity(entry.getResponse().getContent().getText());
+                        response.setEntity(entity);
+                    } catch (UnsupportedEncodingException e) {
+                        LOG.info("UnsupportedEncodingException");
+                    }
+
+                    if (callback != null) {
+                        callback.handleStatusLine(statusLine);
+                        callback.handleHeaders(response.getAllHeaders());
+                    }
+
+                    try {
+                        if (response.getEntity() != null) {
+                            is = response.getEntity().getContent();
+                        }
+                        // check for null (resp 204 can cause HttpClient to return null, which is what Google does with http://clients1.google.com/generate_204)
+                        if (is != null) {
+                            Header contentEncodingHeader = response.getFirstHeader("Content-Encoding");
+                            if (contentEncodingHeader != null && "gzip".equalsIgnoreCase(contentEncodingHeader.getValue())) {
+                                gzipping = true;
+                            }
+
+                            // deal with GZIP content!
+                            if (gzipping) {
+                                os = new GZIPOutputStream(os);
+                            }
+
+                            bytes = copyWithStats(is, os);
+			    // Warning: copyWithStats returns the pre-gzip length, not the post-gzip length
+                            //response.setHeader("Content-Length", String.valueOf(bytes));
+		        }
+
+                    } catch (Exception e) {
+                        errorMessage = e.toString();
+               
+                        if (callback != null) {
+                            callback.reportError(e);
+                        }
+              
+                        // only log it if we're not shutdown (otherwise, errors that happen during a shutdown can likely be ignored)
+                        if (!shutdown) {
+                            LOG.info(String.format("%s when requesting %s", errorMessage, url));
+                        }
+                    } finally {
+                        if (is != null) {
+                            try {
+                                is.close();
+                            } catch (IOException e) {
+                                // this is OK to ignore
+                            }
+                        }
+                    }
+
+                    return new BrowserMobHttpResponse(entry, method, response, errorMessage, contentType, charSet);
+                }
+            }
+        }
+        LOG.info("Serving " + url + " from non-HAR");
+
         if (!additionalHeaders.isEmpty()) {
             // Set the additional headers
             for (Map.Entry<String, String> entry : additionalHeaders.entrySet()) {
@@ -498,15 +610,7 @@ public class BrowserMobHttpClient {
         }
 
 
-        String charSet = "UTF-8";
-        InputStream is = null;
         int statusCode = -998;
-        long bytes = 0;
-        boolean gzipping = false;
-        OutputStream os = req.getOutputStream();
-        if (os == null) {
-            os = new CappedByteArrayOutputStream(1024 * 1024); // MOB-216 don't buffer more than 1 MB
-        }
         Date start = new Date();
 
         // link the object up now, before we make the request, so that if we get cut off (ie: favicon.ico request and browser shuts down)
@@ -889,6 +993,10 @@ public class BrowserMobHttpClient {
             }
             activeRequests.clear();
         }
+    }
+
+    public void setSourceHar(Har har) {
+        this.sourceHar = har;
     }
 
     public void setHar(Har har) {
