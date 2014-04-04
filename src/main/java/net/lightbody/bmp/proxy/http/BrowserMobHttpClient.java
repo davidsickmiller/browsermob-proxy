@@ -22,6 +22,7 @@ import org.apache.http.conn.scheme.Scheme;
 import org.apache.http.conn.scheme.SchemeRegistry;
 import org.apache.http.cookie.*;
 import org.apache.http.cookie.params.CookieSpecPNames;
+import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.auth.BasicScheme;
@@ -538,9 +539,15 @@ public class BrowserMobHttpClient {
                     String contentType = entry.getResponse().getContent().getMimeType();
 
                     try {
-			// TODO: Handle binary content
-			// TODO: If the mimetype indicates a character set other than UTF-8, we should change back to that encoding
-                        HttpEntity entity = new StringEntity(entry.getResponse().getContent().getText());
+                        // TODO: If the mimetype indicates a character set other than UTF-8, we should change back to that encoding
+                        HttpEntity entity;
+                        String text = entry.getResponse().getContent().getText();
+                        if ("base64".equals(entry.getResponse().getContent().getEncoding())) {
+                            LOG.info(url + " has base64 encoding");
+                            entity = new ByteArrayEntity(Base64.base64ToByteArray(text));
+                        } else {
+                            entity = new StringEntity(text);
+                        }
                         response.setEntity(entity);
                     } catch (UnsupportedEncodingException e) {
                         LOG.info("UnsupportedEncodingException");
