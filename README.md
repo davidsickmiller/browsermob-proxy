@@ -49,6 +49,7 @@ Once that is done, a new proxy will be available on the port returned. All you h
   - captureHeaders - Boolean, capture headers
   - captureContent - Boolean, capture content bodies
   - captureBinaryContent - Boolean, capture binary content
+  - captureTextAsBinary - Boolean, treat captured content bodies as binary and thus base64-encode them instead of converting to UTF-8.  This is useful for preserving invalid character set encodings sent from the remote server, but it makes the raw HAR more difficult to read.
  - PUT /proxy/[port]/har/pageRef - starts a new page on the existing HAR. Supports the following parameters:
   - pageRef - the string name of the first page ref that should be used in the HAR. Defaults to "Page N" where N is the next page number.
  - DELETE /proxy/[port] - shuts down the proxy and closes the port

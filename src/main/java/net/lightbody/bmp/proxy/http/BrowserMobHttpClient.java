@@ -71,6 +71,7 @@ public class BrowserMobHttpClient {
 
     private boolean captureHeaders;
     private boolean captureContent;
+    private boolean captureTextAsBinary = false;
     // if captureContent is set, default policy is to capture binary contents too
     private boolean captureBinaryContent = true;
 
@@ -544,11 +545,11 @@ public class BrowserMobHttpClient {
                         String text = entry.getResponse().getContent().getText();
                         if ("base64".equals(entry.getResponse().getContent().getEncoding())) {
                             LOG.info(url + " has base64 encoding");
-                            entity = new ByteArrayEntity(Base64.base64ToByteArray(text));
-                        } else {
-                            entity = new StringEntity(text);
+                            response.setEntity(new ByteArrayEntity(Base64.base64ToByteArray(text)));
+                        } else if (text != null) {
+			    // Note that things like 302 and 304 may not have response bodies, hence no content.text
+                            response.setEntity(new StringEntity(text));
                         }
-                        response.setEntity(entity);
                     } catch (UnsupportedEncodingException e) {
                         LOG.info("UnsupportedEncodingException");
                     }
@@ -869,7 +870,7 @@ public class BrowserMobHttpClient {
                         }
                     }
 
-                    if (hasTextualContent(contentType)) {
+                    if (hasTextualContent(contentType) && !captureTextAsBinary) {
                         setTextOfEntry(entry, copy, contentType);
                     } else if(captureBinaryContent){
                         setBinaryContentOfEntry(entry, copy);
@@ -1123,6 +1124,10 @@ public class BrowserMobHttpClient {
 
     public void setCaptureContent(boolean captureContent) {
         this.captureContent = captureContent;
+    }
+
+    public void setCaptureTextAsBinary(boolean captureTextAsBinary) {
+        this.captureTextAsBinary = captureTextAsBinary;
     }
 
     public void setCaptureBinaryContent(boolean captureBinaryContent) {
