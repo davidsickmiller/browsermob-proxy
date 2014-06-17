@@ -544,7 +544,6 @@ public class BrowserMobHttpClient {
                         HttpEntity entity;
                         String text = entry.getResponse().getContent().getText();
                         if ("base64".equals(entry.getResponse().getContent().getEncoding())) {
-                            LOG.info(url + " has base64 encoding");
                             response.setEntity(new ByteArrayEntity(Base64.base64ToByteArray(text)));
                         } else if (text != null) {
 			    // Note that things like 302 and 304 may not have response bodies, hence no content.text
