@@ -181,6 +181,7 @@ public class ProxyServer {
             Har har = new Har(harJson);
             client.setSourceHar(har);
         } catch (IOException e) {
+            LOG.warn("IOException in setSourceHar", e);
         }
     }
 

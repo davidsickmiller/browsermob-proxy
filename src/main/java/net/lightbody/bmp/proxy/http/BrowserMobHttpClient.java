@@ -503,105 +503,178 @@ public class BrowserMobHttpClient {
         }
 
         if (sourceHar != null) {
+            //
+            // Figure out the request post data so we can use it to find the best
+            // matching entry in the sourceHar.  Before running httpClient.execute(),
+            // the only way to get this information is from jetty's req.getProxyRequest()
+            //
+            ArrayList<HarPostDataParam> reqParams = new ArrayList<HarPostDataParam>();
+            net.lightbody.bmp.proxy.jetty.http.HttpRequest proxyRequest = req.getProxyRequest();
+            net.lightbody.bmp.proxy.jetty.util.MultiMap postParameters = proxyRequest.getParameters();
+            if (!postParameters.isEmpty()) {
+                Map<String, String[]> map = postParameters.toStringArrayMap();
+                for (Map.Entry<String, String[]> entry : map.entrySet()) {
+                    reqParams.add(new HarPostDataParam(entry.getKey(), entry.getValue()[0]));
+                }
+            }
+
+            HarEntry chosenEntry = null;
+
             HarLog log = sourceHar.getLog();
+            List<HarEntry> allMatchingEntries = new ArrayList<HarEntry>();
             for (HarEntry entry : log.getEntries()) {
                 HarRequest request = entry.getRequest();
                 if (url.equals(request.getUrl())) {
-		    LOG.info("Serving " + url + " from HAR");
-                    // Make sure we set the status line here too.
-                    // Use the version number from the request
-		    //LOG.info("http version of entry is " + entry.getResponse().getHttpVersion());
-                    // Browsermob-proxy fails to record it, but I think it only does 1.1
-                    ProtocolVersion version = new HttpVersion(1, 1);
-		    /*
-                    ProtocolVersion version = new HttpVersion(0, 9);
-                    if (entry.getResponse().getHttpVersion().equals("HTTP/1.0")) {
-                        version = new HttpVersion(1, 0);
-                    } else if (entry.getResponse().getHttpVersion().equals("HTTP/1.1")) {
-                        version = new HttpVersion(1, 1);
-                    }
-		    */
-
-                    StatusLine statusLine = new BasicStatusLine(version, entry.getResponse().getStatus(), entry.getResponse().getStatusText());
-                    HttpResponse response = new BasicHttpResponse(statusLine);
-
-		    // Omit Content-Length.  This allows us to avoid problems that
-                    // could be caused by content-encoding changes, charset changes
-                    // or handmade content changes to the HAR content.  Jetty will
-                    // serve the content using chunking.
-		    for (HarNameValuePair nvp : entry.getResponse().getHeaders()) {
-			if (!nvp.getName().equals("Content-Length")) {
-		            //LOG.info("Adding header: " + nvp.getName() + "=" + nvp.getValue());
-                            response.addHeader(nvp.getName(), nvp.getValue());
-			}
-		    }
-
-                    String errorMessage = null;
-                    String contentType = entry.getResponse().getContent().getMimeType();
-
-                    try {
-                        // TODO: If the mimetype indicates a character set other than UTF-8, we should change back to that encoding
-                        HttpEntity entity;
-                        String text = entry.getResponse().getContent().getText();
-                        if ("base64".equals(entry.getResponse().getContent().getEncoding())) {
-                            response.setEntity(new ByteArrayEntity(Base64.base64ToByteArray(text)));
-                        } else if (text != null) {
-			    // Note that things like 302 and 304 may not have response bodies, hence no content.text
-                            response.setEntity(new StringEntity(text));
-                        }
-                    } catch (UnsupportedEncodingException e) {
-                        LOG.info("UnsupportedEncodingException");
-                    }
-
-                    if (callback != null) {
-                        callback.handleStatusLine(statusLine);
-                        callback.handleHeaders(response.getAllHeaders());
-                    }
-
-                    try {
-                        if (response.getEntity() != null) {
-                            is = response.getEntity().getContent();
-                        }
-                        // check for null (resp 204 can cause HttpClient to return null, which is what Google does with http://clients1.google.com/generate_204)
-                        if (is != null) {
-                            Header contentEncodingHeader = response.getFirstHeader("Content-Encoding");
-                            if (contentEncodingHeader != null && "gzip".equalsIgnoreCase(contentEncodingHeader.getValue())) {
-                                gzipping = true;
-                            }
-
-                            // deal with GZIP content!
-                            if (gzipping) {
-                                os = new GZIPOutputStream(os);
-                            }
-
-                            bytes = copyWithStats(is, os);
-			    // Warning: copyWithStats returns the pre-gzip length, not the post-gzip length
-                            //response.setHeader("Content-Length", String.valueOf(bytes));
-		        }
-
-                    } catch (Exception e) {
-                        errorMessage = e.toString();
-               
-                        if (callback != null) {
-                            callback.reportError(e);
-                        }
-              
-                        // only log it if we're not shutdown (otherwise, errors that happen during a shutdown can likely be ignored)
-                        if (!shutdown) {
-                            LOG.info(String.format("%s when requesting %s", errorMessage, url));
-                        }
-                    } finally {
-                        if (is != null) {
-                            try {
-                                is.close();
-                            } catch (IOException e) {
-                                // this is OK to ignore
-                            }
-                        }
-                    }
-
-                    return new BrowserMobHttpResponse(entry, method, response, errorMessage, contentType, charSet);
+                    allMatchingEntries.add(entry);
                 }
+            }
+
+            if (allMatchingEntries.size() > 1) {
+                LOG.warn("Requested URL (" + url + ") matches " + allMatchingEntries.size() + " entries from HAR");
+
+                double bestMatchScore = -10000000000.0;
+
+                for (HarEntry candidateEntry : allMatchingEntries) {
+                    HarRequest harRequest = candidateEntry.getRequest();
+                    HarPostData candidatePostData = harRequest.getPostData();
+                    // TODO: Support text version of HarPostData in addition to param version
+       
+                    // TODO: Use Jaro-Winkler distance algorithm for match score?
+                    double matchScore = 0.0;
+   
+                    // Add a point for each expected parameter we find that matches exactly.
+                    for (HarPostDataParam reqHarPostDataParam : reqParams) {
+                        boolean foundMatchingParam = false;
+                        for (HarPostDataParam candidatePostDataParam : candidatePostData.getParams()) {
+                            if (candidatePostDataParam.getName().equals(reqHarPostDataParam.getName())
+                                    && candidatePostDataParam.getValue().equals(reqHarPostDataParam.getValue())) {
+                                foundMatchingParam = true;
+                            }
+                        }
+                        if (foundMatchingParam) {
+                            matchScore += 1;
+                        }
+                    }
+  
+                    // Subtract a point for each unexpected name in the candidate
+		    if (candidatePostData != null && candidatePostData.getParams() != null) {
+                        for (HarPostDataParam candidatePostDataParam : candidatePostData.getParams()) {
+                            boolean foundMatchingName = false;
+                            for (HarPostDataParam reqHarPostDataParam : reqParams) {
+                                if (candidatePostDataParam.getName().equals(reqHarPostDataParam.getName())) {
+                                    foundMatchingName = true;
+                                }
+                            }
+                            if (!foundMatchingName) {
+                                matchScore -= 1;
+                            }
+                        }
+		    }
+ 
+                    LOG.warn("Match score is " + matchScore);
+                    if (matchScore > bestMatchScore) {
+                        chosenEntry = candidateEntry;
+                        bestMatchScore = matchScore;
+                    }
+                }
+            } else if (allMatchingEntries.size() == 1) {
+                chosenEntry = allMatchingEntries.get(0);
+            }
+
+            if (chosenEntry != null) {
+                LOG.info("Serving " + url + " from HAR");
+                // Make sure we set the status line here too.
+                // Use the version number from the request
+                //LOG.info("http version of entry is " + chosenEntry.getResponse().getHttpVersion());
+                // Browsermob-proxy fails to record it, but I think it only does 1.1
+                ProtocolVersion version = new HttpVersion(1, 1);
+                /*
+                ProtocolVersion version = new HttpVersion(0, 9);
+                if (chosenEntry.getResponse().getHttpVersion().equals("HTTP/1.0")) {
+                    version = new HttpVersion(1, 0);
+                } else if (chosenEntry.getResponse().getHttpVersion().equals("HTTP/1.1")) {
+                    version = new HttpVersion(1, 1);
+                }
+                */
+
+                StatusLine statusLine = new BasicStatusLine(version, chosenEntry.getResponse().getStatus(), chosenEntry.getResponse().getStatusText());
+                HttpResponse response = new BasicHttpResponse(statusLine);
+
+                // Omit Content-Length.  This allows us to avoid problems that
+                // could be caused by content-encoding changes, charset changes
+                // or handmade content changes to the HAR content.  Jetty will
+                // serve the content using chunking.
+                for (HarNameValuePair nvp : chosenEntry.getResponse().getHeaders()) {
+                    if (!nvp.getName().equals("Content-Length")) {
+                        //LOG.info("Adding header: " + nvp.getName() + "=" + nvp.getValue());
+                        response.addHeader(nvp.getName(), nvp.getValue());
+                    }
+                }
+
+                String errorMessage = null;
+                String contentType = chosenEntry.getResponse().getContent().getMimeType();
+
+                try {
+                    // TODO: If the mimetype indicates a character set other than UTF-8, we should change back to that encoding
+                    String text = chosenEntry.getResponse().getContent().getText();
+                    if ("base64".equals(chosenEntry.getResponse().getContent().getEncoding())) {
+                        response.setEntity(new ByteArrayEntity(Base64.base64ToByteArray(text)));
+                    } else if (text != null) {
+                        // Note that things like 302 and 304 may not have response bodies, hence no content.text
+                        response.setEntity(new StringEntity(text));
+                    }
+                } catch (UnsupportedEncodingException e) {
+                    LOG.info("UnsupportedEncodingException");
+                }
+
+                if (callback != null) {
+                    callback.handleStatusLine(statusLine);
+                    callback.handleHeaders(response.getAllHeaders());
+                }
+
+                try {
+                    if (response.getEntity() != null) {
+                        is = response.getEntity().getContent();
+                    }
+                    // check for null (resp 204 can cause HttpClient to return null, which is what Google does with http://clients1.google.com/generate_204)
+                    if (is != null) {
+                        Header contentEncodingHeader = response.getFirstHeader("Content-Encoding");
+                        if (contentEncodingHeader != null && "gzip".equalsIgnoreCase(contentEncodingHeader.getValue())) {
+                            gzipping = true;
+                        }
+
+                        // deal with GZIP content!
+                        if (gzipping) {
+                            os = new GZIPOutputStream(os);
+                        }
+
+                        bytes = copyWithStats(is, os);
+                        // Warning: copyWithStats returns the pre-gzip length, not the post-gzip length
+                        //response.setHeader("Content-Length", String.valueOf(bytes));
+                    }
+
+                } catch (Exception e) {
+                    errorMessage = e.toString();
+           
+                    if (callback != null) {
+                        callback.reportError(e);
+                    }
+          
+                    // only log it if we're not shutdown (otherwise, errors that happen during a shutdown can likely be ignored)
+                    if (!shutdown) {
+                        LOG.info(String.format("%s when requesting %s", errorMessage, url));
+                    }
+                } finally {
+                    if (is != null) {
+                        try {
+                            is.close();
+                        } catch (IOException e) {
+                            // this is OK to ignore
+                        }
+                    }
+                }
+
+                return new BrowserMobHttpResponse(chosenEntry, method, response, errorMessage, contentType, charSet);
             }
         }
         LOG.info("Serving " + url + " from non-HAR");
@@ -697,11 +770,11 @@ public class BrowserMobHttpClient {
                 ProtocolVersion version = null;
                 int reqDotVersion = req.getProxyRequest().getDotVersion();
                 if (reqDotVersion == -1) {
-                	version = new HttpVersion(0, 9);
+                    version = new HttpVersion(0, 9);
                 } else if (reqDotVersion == 0) {
-                	version = new HttpVersion(1, 0);
+                    version = new HttpVersion(1, 0);
                 } else if (reqDotVersion == 1) {
-                   	version = new HttpVersion(1, 1);
+                    version = new HttpVersion(1, 1);
                 }
                 // and if not any of these, trust that a Null version will
                 // cause an appropriate error
